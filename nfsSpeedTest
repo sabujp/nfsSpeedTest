@@ -1,0 +1,287 @@
+#!/usr/bin/perl
+
+# nfsSpeedTest - Tests NFS performance on single file reads/writes using dd and or perl's sysread. 
+# See ./nfsSpeedTest -h for more info
+# Copyright (C) 2007-2012  Sabuj Pattanayek
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# v1.1
+
+use Getopt::Std;
+use Time::HiRes qw(gettimeofday);
+use File::Sync qw(sync);
+
+$| = 1;
+
+#print "$^O\n";
+$ddErrorRe = "count: illegal numeric value";
+
+$testFile = "nfsSpeedTest-";
+for ($i=0; $i < 20; $i++) {
+	$testFile .= int(rand(10));
+}
+
+$hostName = `hostname`;
+chomp($hostName);
+$bs = 4096;
+$count = 25000;
+%options=();
+getopts("w:c:b:s:t:fvrnduyhi", \%options);
+
+if (defined($options{h})) {
+	usage();
+}
+
+if (defined($options{u})) {
+	$devSource = "urandom";
+}
+else {
+	$devSource = "zero";
+}
+
+$sleepAfterWrite = 0;
+if (defined($options{t})) {
+	if ($options{t} =~ /(^\d+)/) {
+		$sleepAfterWrite = $1;
+    }
+	else {
+		usage();
+	}
+}
+
+if (defined($options{w})) {
+	if ($options{w} =~ /(^\d+)/) {
+		$bw = $1;
+	}
+	else {
+		usage();
+	}
+}
+
+if (defined($options{b})) {
+	if ($options{b} =~ /(^\d+)(k|m)/) {
+		$bsShort = $1;
+		$bsSuffix = $2;
+		if ($bsSuffix eq 'k') {
+			$bs = $bsShort * 1024;
+		}
+		elsif ($bsSuffix eq 'm') {
+			$bs = $bsShort * 1024**2;
+		}
+		else {
+			usage();
+		}
+	}
+	else {
+		usage();
+	}
+}
+
+if (defined($options{s})) {
+	if ($options{s} =~ /(^\d+)(k|m|g)/) {
+		$sizeShort = $1;
+		$sizeSuffix = $2;
+		lc($sizeSuffix);
+		if ($sizeSuffix eq 'k') {
+			$bytes = $sizeShort * 1024;
+		}
+		elsif ($sizeSuffix eq 'm') {
+			$bytes = $sizeShort * 1024**2;
+		}
+		elsif ($sizeSuffix eq 'g') {
+			$bytes = $sizeShort * 1024**3;
+		}	
+		else {
+			usage()
+		}
+	}
+	else {
+		usage();
+	}
+}
+else {
+	usage();
+}
+
+if (defined($options{c})) {
+	die "$hostname : Couldn't chdir($options{c})!\n" unless chdir($options{c});
+}
+
+doTest();
+
+sub doTest {
+	$count = $bytes / $bs;
+	# write test
+	#sync;
+	if (defined($options{i})) {
+		$command = "dd if=/dev/$devSource of=$testFile bs=$bs count=$count oflag=direct 2>&1 |";
+	}
+	else {
+		$command = "dd if=/dev/$devSource of=$testFile bs=$bs count=$count 2>&1 |";
+	}
+	($t0_s, $t0_us) = gettimeofday;
+	die "$hostname : Couldn't start write dd!\n\n" unless open(DD, "$command");
+	while(<DD>) {
+		$line = $_;
+		if ($line =~ /$ddErrorRe/) {
+			print "$line\n";
+			die "$hostname : Try changing the argument to -b\n";
+		}
+		if (defined($options{v})) {
+			print "$hostName: $line";
+		}
+	}
+	close(DD);
+	($t1_s, $t1_us) = gettimeofday;
+	$totalSeconds = ($t1_s + $t1_us / 1e6)  - ($t0_s + $t0_us / 1e6);
+	$mb = $bytes / (1024**2);
+	printf("%s: Write test (dd): %.3f MB/s %.3f mbps %.3f seconds ", $hostName, $mb/$totalSeconds, ($mb * 8) / $totalSeconds, $totalSeconds);
+	if ((($mb * 8)/$totalSeconds > ($bw * 2)) && defined($options{w})) {
+		cacheEffectWarning();
+	}
+	else {
+		printf("\n");
+	}
+	if (defined($options{f})) {
+		sync;
+	}
+	if ($sleepAfterWrite) {
+		sleep($sleepAfterWrite);
+    }
+
+	# read test
+	if (!(defined($options{r}))) {
+		# try read test with sysread rather than dd
+		if (defined($options{n})) {
+			die "$hostName: Couldn't open $testFile for reading!\n" unless open($inFile, "<$testFile");
+			($t0_s, $t0_us) = gettimeofday;
+			while (sysread($inFile, $buf, $bs, 0)) { }
+			#sync;
+			($t1_s, $t1_us) = gettimeofday;
+			$totalSeconds = ($t1_s + $t1_us / 1e6)  - ($t0_s + $t0_us / 1e6);
+			printf("%s: Read test (dd): %.3f MB/s %.3f mbps %.3f seconds ", $hostName, $mb/$totalSeconds, ($mb * 8) / $totalSeconds, $totalSeconds);
+			if ((($mb * 8)/$totalSeconds > ($bw * 2)) && defined($options{w})) {
+				cacheEffectWarning();
+			}
+			else {
+				printf("\n");
+			}
+			close($inFile);
+		}
+		else {
+			# read test using dd
+		    if (defined($options{i})) {
+		        $command = "dd if=$testFile of=/dev/null bs=$bs iflag=direct 2>&1 |";
+		    }
+		    else {
+		        $command = "dd if=$testFile of=/dev/null bs=$bs 2>&1 |";
+		    }
+			($t0_s, $t0_us) = gettimeofday;
+			die "$hostname : Couldn't start read dd!\n\n" unless open(DD, "$command");
+			while (<DD>) {
+				$line = $_;
+				if ($line =~ /$ddErrorRe/) {
+					print "$line\n";
+					die "$hostName: Try changing the argument to -b\n";
+				}
+				if (defined($options{v})) {
+					print "$hostName: $line";
+				}
+			}
+			close(DD);
+			#sync;
+			($t1_s, $t1_us) = gettimeofday;
+			$totalSeconds = ($t1_s + $t1_us / 1e6)  - ($t0_s + $t0_us / 1e6);
+			printf("%s: Read test (dd): %.3f MB/s %.3f mbps %.3f seconds ", $hostName, $mb/$totalSeconds, ($mb * 8) / $totalSeconds, $totalSeconds);
+			if ((($mb * 8)/$totalSeconds > ($bw * 2)) && defined($options{w})) {
+				cacheEffectWarning();
+			}
+			else {
+				printf("\n");
+			}
+		}
+	}
+
+	# Simultaneous read and write test, i.e. copy
+	if (!(defined($options{y}))) {
+        if (defined($options{i})) {
+	        $command = "dd if=$testFile of=${testFile}-copy bs=$bs 2>&1 oflag=direct iflag=direct |";
+        }
+        else {
+            $command = "dd if=$testFile of=${testFile}-copy bs=$bs 2>&1 |";
+        }
+		($t0_s, $t0_us) = gettimeofday;
+		die "$hostname : Couldn't start read dd for copy test!\n\n" unless open(DD, "$command");
+		while (<DD>) {
+			$line = $_;
+			if ($line =~ /$ddErrorRe/) {
+				print "$line\n";
+				die "$hostName: Try changing the argument to -b\n";
+			}
+			if (defined($options{v})) {
+				print "$hostName: $line";
+			}
+		}
+		close(DD);
+		#sync;
+		($t1_s, $t1_us) = gettimeofday;
+		$totalSeconds = ($t1_s + $t1_us / 1e6)  - ($t0_s + $t0_us / 1e6);
+		printf("%s: Copy test (dd): %.3f MB/s %.3f mbps %.3f seconds ", $hostName, $mb/$totalSeconds, ($mb * 8) / $totalSeconds, $totalSeconds);
+		if ((($mb * 8)/$totalSeconds > ($bw * 2)) && defined($options{w})) {
+			cacheEffectWarning();
+		}
+		else {
+			printf("\n");
+		}
+		unlink("${testFile}-copy");
+	}
+
+	removeTestFile();
+	exit(0);
+}
+
+sub cacheEffectWarning {
+	printf("*** warning *** possible cache effect (increase the filesize)\n");
+}
+
+sub removeTestFile {
+	if (!defined($options{d})) {
+		print "$hostName: Removing file $testFile. Please wait...\n";
+		unlink("$testFile");
+	}
+}
+
+sub usage {
+	print "\n";
+	print "Purpose: Writes the file \"$testFile\" to the local directory using dd if=/dev/zero or if=/dev/urandom (optional). For a read test it does dd if=$testFile of=/dev/null or uses perl's sysread call (optional). For a read and write (i.e. copy) test it uses dd if=$testFile of=${testFile}-copy. All tests tell you the bandwidth in MB/s and mbps.\n\n";
+	print "Usage:\n\n";
+	print "nfsSpeedTest -b <blockSize> -c <dir> -d -f -h -i -n -r -s <fileSize> -t <timeInSeconds> -u -v -w <bandwidth> -y\n\n";
+	print "-b : block size e.g. 2k, 2m, if not specified defaults to 4k\n";
+	print "-c : change to <dir> before running the test, otherwise uses the current directory\n";
+	print "-d : do not delete the testfile ($testFile), otherwise deletes it\n";\
+	print "-f : sync after write, after the calculation of the bandwidth/time to write\n";
+	print "-h : print this page and exit\n";
+	print "-i : use oflag=direct for writes, iflag=direct for reads, and both for the copy test. Has no effect on the read test when used with -n\n";
+	print "-n : try read test with perl's sysread call rather than dd\n";
+	print "-r : do not run read test\n";
+	print "-s : test file size e.g. 2k, 2m, 2g (required)\n";
+	print "-t : sleep <timeInSeconds> seconds after a write, give the NFS server some time to sync\n";
+	print "-u : use /dev/urandom rather than /dev/zero as the dd input during the write test (warning this will reduce write bandwidth by a third or more, use only for testing!)\n";
+	print "-v : verbose\n";
+	print "-w : bandwitdh in mbps (e.g. 10, 100, 1000, 10000). Used in determining whether cache effects are being seen during the read test. Cache effects will increase throughput on the copy test for small files. Increasing the argument to -s will make the cache effect go away.\n";
+	print "-y : do not run copy test\n";
+	print "\n";
+	exit(-1);
+}
