@@ -1,4 +1,53 @@
 nfsSpeedTest
 ============
 
-nfsSpeedTest is a wrapper for dd written in Perl. It was created mainly for testing the performance of file systems or network file shares (e.g. NFS), but can be used for generating large files (e.g. swap files) or for testing the network
+nfsSpeedTest is a wrapper for dd written in Perl. It was created mainly for testing the performance of file systems or network file shares (e.g. NFS), but can be used for generating large files (e.g. swap files) or for testing the network. For the write test, by default, it reads from /dev/zero and outputs to a random file (e.g. nfsSpeedTest-someRandomMD5Hash). For the read test, it can again use dd or Perl's sysread call. Variable block sizes are supported.
+
+### Output when run with no options (help/usage): ###
+
+Purpose: Writes the file "nfsSpeedTest-randomMD5Hash" to the local directory using dd if=/dev/zero or if=/dev/urandom (optional). For a read test it does dd if=nfsSpeedTest-randomMD5Hash of=/dev/null or uses perl's sysread call (optional). For a read and write (i.e. copy) test it uses dd if=nfsSpeedTest-randomMD5Hash of=nfsSpeedTest-randomMD5Hash-copy. All tests tell you the bandwidth in MB/s and mbps.
+
+Usage:
+
+nfsSpeedTest -b <blockSize> -c <dir> -d -f -h -i -n -r -s <fileSize> -t <timeInSeconds> -u -v -w <bandwidth> -y
+
+-b : block size e.g. 2k, 2m, if not specified defaults to 4k
+-c : change to <dir> before running the test, otherwise uses the current directory
+-d : do not delete the testfile (nfsSpeedTest-79717443437035186044), otherwise deletes it
+-f : sync after write, after the calculation of the bandwidth/time to write
+-h : print this page and exit
+-i : use oflag=direct for writes, iflag=direct for reads, and both for the copy test. Has no effect on the read test when used with -n
+-n : try read test with perl's sysread call rather than dd
+-r : do not run read test
+-s : test file size e.g. 2k, 2m, 2g (required)
+-t : sleep <timeInSeconds> seconds after a write, give the NFS server some time to sync
+-u : use /dev/urandom rather than /dev/zero as the dd input during the write test (warning this will reduce write bandwidth by a third or more, use only for testing!)
+-v : verbose
+-w : bandwitdh in mbps (e.g. 10, 100, 1000, 10000). Used in determining whether cache effects are being seen during the read test. Cache effects will increase throughput on the copy test for small files. Increasing the argument to -s will make the cache effect go away.
+-y : do not run copy test
+
+### Examples ####
+
+# write a 4GB file using /dev/zero, do a read test using dd, do a copy test, then delete the file
+
+nfsSpeedTest -s 4g
+
+# write a 512MB file using /dev/zero, do a read test using dd, don't do a copy test, then delete the file
+
+nfsSpeedTest -s 512m -y
+
+# write a 4GB file with 32k block size, don't do a copy test, don't delete the file
+
+nfsSpeedTest -s 4g -b 32k -y -d
+
+# write a 2GB file and then make it into a swap file
+
+nfsSpeedTest -s 2GB -r -y -d
+
+mv nfsSpeedTest-somRandomMD5Hash /swapFile
+
+mkswap /swapFile
+
+swapon /swapFile
+
+# Note, if you don't want to see cache effects on the read test, always use a test file size at least 1GB larger than the amount of RAM on the system that's running the script or use nocache (https://github.com/Feh/nocache) . On some Linux distributions you can also fill the /dev/shm ramdisk with a nfsSpeedTest file (using the -d option to not have it deleted) to reduce the amount of available memory on the system by 50%. This will also reduce the size of the file you should use (-s option) to get a good read test by 50%.
